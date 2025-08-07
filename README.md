@@ -26,7 +26,7 @@ The `main` package contains an example for using this implementation.
 The following command starts the example program with the configuration for the node of id "1" :
 
 ````
-go run cfg1.yml
+go build cfg1.yml
 ````
 
 Upon running any node, a file ``store_[NODE_ID].json`` will be created to persist the state of the node.
