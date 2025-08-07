@@ -29,6 +29,8 @@ The following command starts the example program with the configuration for the 
 go run cfg1.yml
 ````
 
+Upon running any node, a file ``store_[NODE_ID].json`` will be created to persist the state of the node.
+
 ## Done
 
 - Leader election
