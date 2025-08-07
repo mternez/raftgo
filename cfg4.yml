@@ -1,0 +1,18 @@
+minHeartbeatTimeout: 150
+maxHeartbeatTimeout: 300
+electionTimeout: 500
+probePeersTimeout: 500
+node:
+  id: 4
+  host: localhost
+  port: 4444
+peers:
+  - id: 1
+    host: localhost
+    port: 1111
+  - id: 2
+    host: localhost
+    port: 2222
+  - id: 3
+    host: localhost
+    port: 3333
