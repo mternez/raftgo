@@ -59,3 +59,6 @@ Raft :
 - Redirect to the leader if node is requested by client or if old leader is requested
 - Expose Metrics
 - Tests
+
+Main :
+- Create a client that fetches the state of all available nodes and compares states
