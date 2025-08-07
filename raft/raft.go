@@ -44,6 +44,7 @@ type PeerClient interface {
 	AppendEntries(payload AppendEntriesPayload) (*AppendEntriesReply, error)
 	Reconnect() error
 	IsConnected() bool
+	GetAddr() string
 }
 
 type RequestVotePayload struct {

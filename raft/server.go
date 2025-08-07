@@ -25,6 +25,7 @@ type ServerNode struct {
 	votes       int // Number of votes of this instance has received this election
 	votedFor    int // Peer for whom this instance has voted
 	Entries     []*LogEntry
+	// Volatile
 	commitIndex int // index of highest log entry known to be committed (initialized to 0, increases monotonically)
 	lastApplied int // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
 	// Only for leaders
@@ -40,19 +41,26 @@ type ServerConfiguration struct {
 }
 
 type Server struct {
-	cluster                *Cluster
-	requestVoteWaitGroup   sync.WaitGroup
-	appendEntriesWaitGroup sync.WaitGroup
-	mutex                  sync.Mutex
-	electionTicker         *time.Ticker // Ticker for election period
-	listenHeartbeatTicker  *time.Ticker // Ticker for leader hearbeat
-	sendHeartbeatTicker    *time.Ticker
-	configuration          *ServerConfiguration
-	node                   *ServerNode
-	logger                 Logger
-	storage                ServerNodeStorage
-	stateMachine           StateMachine
-	onCommittedCommand     func(command []byte)
+	cluster                  *Cluster
+	requestVoteWaitGroup     sync.WaitGroup
+	appendEntriesWaitGroup   sync.WaitGroup
+	mutex                    sync.Mutex
+	electionTicker           *time.Ticker // Ticker for election period
+	listenHeartbeatTicker    *time.Ticker // Ticker for leader hearbeat
+	sendHeartbeatTicker      *time.Ticker
+	configuration            *ServerConfiguration
+	node                     *ServerNode
+	logger                   Logger
+	storage                  ServerNodeStorage
+	stateMachine             StateMachine
+	CommittedCommandsChannel chan CommittedEntry
+}
+
+type CommittedEntry struct {
+	Index   int
+	Command []byte
+	Result  []byte
+	Error   error
 }
 
 type ServerOption func(*Server)
@@ -94,12 +102,6 @@ func WithStateMachine(stateMachine StateMachine) ServerOption {
 	}
 }
 
-func WithOnComittedCommand(callBack func(command []byte)) ServerOption {
-	return func(s *Server) {
-		s.onCommittedCommand = callBack
-	}
-}
-
 func WithDefault() ServerOption {
 	return func(s *Server) {
 		s.logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -112,11 +114,13 @@ func WithDefault() ServerOption {
 
 func NewServer(nodeId int, peers []*Peer, options ...ServerOption) *Server {
 	s := &Server{
-		mutex:                sync.Mutex{},
-		requestVoteWaitGroup: sync.WaitGroup{},
-		node:                 &ServerNode{id: nodeId, votes: 0, votedFor: _nilPeerId, commitIndex: -1, lastApplied: -1},
-		cluster:              &Cluster{peers: peers, leader: nil},
-		configuration:        &ServerConfiguration{},
+		CommittedCommandsChannel: make(chan CommittedEntry, 1),
+		mutex:                    sync.Mutex{},
+		requestVoteWaitGroup:     sync.WaitGroup{},
+		appendEntriesWaitGroup:   sync.WaitGroup{},
+		node:                     &ServerNode{id: nodeId, votes: 0, votedFor: _nilPeerId, commitIndex: 0, lastApplied: 0},
+		cluster:                  &Cluster{peers: peers, leader: nil},
+		configuration:            &ServerConfiguration{},
 	}
 	// If no options provided, apply default configuration
 	if len(options) == 0 {
@@ -241,7 +245,7 @@ func (s *Server) AppendEntries(payload AppendEntriesPayload, reply *AppendEntrie
 		s.becomeFollower(payload.LeaderTerm)
 	}
 
-	if len(payload.Entries) != 0 {
+	if len(payload.Entries) != 0 && s.node.state != LEADER {
 		prevLogEntry := s.getLogEntryByIndex(payload.PrevLogIndex)
 		if prevLogEntry != nil && !(prevLogEntry.Term == payload.PrevLogTerm) {
 			reply.Success = false
@@ -283,8 +287,11 @@ func (s *Server) updateEntries(newEntries []LogEntry) {
 	// Append new entries
 	for _, newEntry := range newEntries {
 		s.node.Entries = append(s.node.Entries, &newEntry)
+		s.logger.Debug("applying committed entry from leader")
+		s.applyCommittedEntry(&newEntry)
 	}
 }
+
 func (s *Server) removeIncoherentEntries(newEntries []LogEntry) {
 	incoherentLogIndex := -1
 
@@ -466,46 +473,15 @@ func (s *Server) sendHeartbeats() {
 		return
 	}
 	s.mutex.Unlock()
-	successCounter := atomic.Int32{}
 	for _, peer := range s.cluster.peers {
 		peer.client.Reconnect()
 		if peer.client.IsConnected() {
-			s.appendEntriesWaitGroup.Add(1)
-			go s.sendEntries(peer, &successCounter)
+			go s.sendEmptyEntries(peer)
 		}
-	}
-	// Wait for all requests to be made
-	done := make(chan struct{})
-	go func() {
-		s.appendEntriesWaitGroup.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		s.mutex.Lock()
-		defer s.mutex.Unlock()
-		if s.node.state != LEADER {
-			return
-		}
-		if len(s.node.Entries) != 0 {
-			livePeers := s.livePeers()
-			majority := (livePeers+1)/2 + 1
-			if int(successCounter.Load()) >= majority {
-				s.logger.Debug("logs commited")
-				s.node.commitIndex = s.node.commitIndex + len(s.node.Entries)
-				return
-			} else {
-				s.logger.Debug("logs not commited")
-				return
-			}
-		}
-		return
 	}
 }
 
-// Serves also as a way of sending heartbeat
-func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32) {
-	defer s.appendEntriesWaitGroup.Done()
+func (s *Server) sendEmptyEntries(peer *Peer) {
 	s.mutex.Lock()
 	s.logger.Debug("sending heartbeat", "node", s.node, "peer", peer.id)
 	prevLogEntryIndex := s.node.nextIndex[peer.id] - 1
@@ -514,19 +490,12 @@ func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32) {
 	if prevLogEntry != nil {
 		prevLogEntryTerm = prevLogEntry.Term
 	}
-	entries := make([]LogEntry, 0)
-	peerNextLogIndex := s.node.nextIndex[peer.id]
-	if peerNextLogIndex >= 0 {
-		for i := peerNextLogIndex; i < len(s.node.Entries); i++ {
-			entries = append(entries, *s.node.Entries[i])
-		}
-	}
 	payload := AppendEntriesPayload{
 		LeaderTerm:        s.node.currentTerm,
 		LeaderId:          s.node.id,
 		PrevLogIndex:      prevLogEntryIndex,
 		PrevLogTerm:       prevLogEntryTerm,
-		Entries:           entries,
+		Entries:           []LogEntry{},
 		LeaderCommitIndex: s.node.commitIndex,
 	}
 	s.mutex.Unlock()
@@ -535,16 +504,6 @@ func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32) {
 	if reply.FollowerTerm > s.node.currentTerm {
 		s.logger.Debug("response term > current term", "node", s.node, "peer", peer.id, "peerTerm", reply.FollowerTerm)
 		s.becomeFollower(s.node.currentTerm)
-	}
-	// follower contained entry matching prevLogIndex and prevLogTerm
-	if reply.Success {
-		if len(entries) > 0 {
-			s.node.nextIndex[peer.id]++
-			s.node.matchIndex[peer.id]++
-		}
-		successCounter.Add(1)
-	} else {
-		s.node.nextIndex[peer.id]--
 	}
 	s.mutex.Unlock()
 	return
@@ -588,22 +547,147 @@ func (s *Server) becomeCandidate() {
 	s.persistState()
 }
 
-func (s *Server) submitCommand(command []byte) bool {
+func (s *Server) SubmitCommand(command []byte) bool {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 
 	s.logger.Debug("submitted command", "node", s.node, "command", command)
 
 	if s.node.state != LEADER {
+		s.mutex.Unlock()
 		return false
 	}
 
 	s.node.Entries = append(s.node.Entries, &LogEntry{Index: s.getLastLogIndex() + 1, Term: s.node.currentTerm, Command: command})
+
+	s.logger.Debug("sending entries")
+
+	s.mutex.Unlock()
+	s.sendAppendEntries()
 	return true
+}
+
+func (s *Server) sendAppendEntries() {
+	s.mutex.Lock()
+	if s.node.state != LEADER {
+		s.mutex.Unlock()
+		return
+	}
+	s.mutex.Unlock()
+	successCounter := atomic.Int32{}
+	for _, peer := range s.cluster.peers {
+		peer.client.Reconnect()
+		if peer.client.IsConnected() {
+			s.appendEntriesWaitGroup.Add(1)
+			go s.sendEntries(peer, &successCounter)
+		}
+	}
+	s.logger.Debug("sent all requests, now waiting")
+	// Wait for all requests to be made
+	done := make(chan struct{})
+	go func() {
+		s.appendEntriesWaitGroup.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		s.mutex.Lock()
+		defer s.mutex.Unlock()
+		if s.node.state != LEADER {
+			return
+		}
+		s.logger.Debug("processing results")
+		if len(s.node.Entries) != 0 {
+			livePeers := s.livePeers()
+			majority := (livePeers+1)/2 + 1
+			if int(successCounter.Load()) >= majority {
+				s.logger.Debug("logs commited")
+				s.node.commitIndex = s.node.commitIndex + len(s.node.Entries)
+				return
+			} else {
+				s.logger.Debug("logs not commited")
+				return
+			}
+		}
+		return
+	}
+}
+
+func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32) {
+	defer s.appendEntriesWaitGroup.Done()
+	s.mutex.Lock()
+	s.logger.Debug("sending entries to peer", "node", s.node, "peer", peer.id)
+	prevLogEntryIndex := s.node.nextIndex[peer.id] - 1
+	prevLogEntryTerm := -1
+	prevLogEntry := s.getLogEntryByIndex(prevLogEntryIndex)
+	if prevLogEntry != nil {
+		prevLogEntryTerm = prevLogEntry.Term
+	}
+	entries := make([]LogEntry, 0)
+	peerNextLogIndex := s.node.nextIndex[peer.id]
+	if peerNextLogIndex >= 0 {
+		for i := peerNextLogIndex; i < len(s.node.Entries); i++ {
+			entries = append(entries, *s.node.Entries[i])
+		}
+	}
+	payload := AppendEntriesPayload{
+		LeaderTerm:        s.node.currentTerm,
+		LeaderId:          s.node.id,
+		PrevLogIndex:      prevLogEntryIndex,
+		PrevLogTerm:       prevLogEntryTerm,
+		Entries:           entries,
+		LeaderCommitIndex: s.node.commitIndex,
+	}
+	s.mutex.Unlock()
+	reply, _ := peer.client.AppendEntries(payload)
+	s.mutex.Lock()
+	if reply.FollowerTerm > s.node.currentTerm {
+		s.logger.Debug("response term > current term", "node", s.node, "peer", peer.id, "peerTerm", reply.FollowerTerm)
+		s.becomeFollower(s.node.currentTerm)
+	}
+	// follower contained entry matching prevLogIndex and prevLogTerm
+	if reply.Success {
+		for _, entry := range entries {
+			s.logger.Debug("entries committed")
+			s.node.nextIndex[peer.id]++
+			s.node.matchIndex[peer.id]++
+			s.node.commitIndex = entry.Index
+			s.applyCommittedEntry(&entry)
+			s.logger.Debug("after apply entry")
+		}
+		successCounter.Add(1)
+	} else {
+		s.node.nextIndex[peer.id]--
+	}
+	s.mutex.Unlock()
+	return
+}
+
+func (s *Server) applyCommittedEntry(entry *LogEntry) {
+
+	s.logger.Debug("applying entry to state machine", "entry", entry)
+
+	commandResult, commitErr := s.stateMachine.Apply(entry.Command)
+	if commitErr != nil {
+		s.logger.Error("failed applying committed command to state machine", "err", commitErr, "command", string(entry.Command), "state machine", s.stateMachine)
+	}
+	s.node.lastApplied = entry.Index
+	s.persistState()
+	s.logger.Debug("before sending to committed entry channel")
+	go func(committedEntry *LogEntry, committedEntriesChannel chan CommittedEntry) {
+		committedEntriesChannel <- CommittedEntry{
+			Index:   committedEntry.Index,
+			Command: committedEntry.Command,
+			Result:  commandResult,
+			Error:   commitErr,
+		}
+	}(entry, s.CommittedCommandsChannel)
+
+	s.logger.Debug("after sending to committed entry channel")
 }
 
 func (s *Server) persistState() {
 	if s.storage != nil {
+		s.logger.Debug("persisting state")
 		state := &ServerNodeState{
 			CurrentTerm: s.node.currentTerm,
 			VotedFor:    s.node.votedFor,

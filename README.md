@@ -31,6 +31,22 @@ go build cfg1.yml
 
 Upon running any node, a file ``store_[NODE_ID].json`` will be created to persist the state of the node.
 
+### Exposed endpoints on example project
+
+An HTTP server is ran alongside the raft server (port specified by the httpPort property in the configuration file).
+
+4 endpoints are exposed for setting, getting and unsetting values in the sample Key Value Database state machine.
+
+The following endpoints all expect a body of the following format :  { Key: string, Value: string }
+
+- POST /set 
+- GET  /get
+- POST /unset
+
+The following endpoint returns a string representation of the current values in the state machine.
+
+- GET /all
+
 ## Done
 
 - Leader election
@@ -40,10 +56,6 @@ Upon running any node, a file ``store_[NODE_ID].json`` will be created to persis
 ## To Do
 
 Raft : 
-- Apply commands to the state machine
 - Redirect to the leader if node is requested by client or if old leader is requested
 - Expose Metrics
-- Tests 
-
-Example `mainpackage` :
-- Expose endpoints to send commands to the nodes
+- Tests

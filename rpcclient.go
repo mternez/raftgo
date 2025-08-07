@@ -58,6 +58,10 @@ func (c *RpcClient) IsConnected() bool {
 	return c.client != nil
 }
 
+func (c *RpcClient) GetAddr() string {
+	return fmt.Sprintf("%s:%s", c.host, c.port)
+}
+
 func NewRpcClient(host string, port string) (*RpcClient, error) {
 	client, err := rpc.DialHTTP("tcp", fmt.Sprintf("%s:%s", host, port))
 	if err != nil {

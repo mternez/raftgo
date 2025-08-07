@@ -2,6 +2,7 @@ minHeartbeatTimeout: 150
 maxHeartbeatTimeout: 300
 electionTimeout: 500
 probePeersTimeout: 500
+httpPort: 8081
 node:
   id: 2
   host: localhost

@@ -19,19 +19,19 @@ type KeyValueDbStateMachine struct {
 type KeyValueDbStateMachineCommandType = int
 
 const (
-	SET = iota
+	SET KeyValueDbStateMachineCommandType = iota
 	GET
 	UNSET
 )
 
 type KeyValueDbStateMachineCommand struct {
-	commandType KeyValueDbStateMachineCommandType
-	key         string
-	value       string
+	CommandType KeyValueDbStateMachineCommandType
+	Key         string
+	Value       string
 }
 
 type KeyValueDbStateMachineCommandResult struct {
-	data any
+	Data string
 }
 
 func (s *KeyValueDbStateMachine) Apply(serializedCommand []byte) ([]byte, error) {
@@ -47,22 +47,22 @@ func (s *KeyValueDbStateMachine) Apply(serializedCommand []byte) ([]byte, error)
 		return nil, errors.New("command is nil")
 	}
 
-	if command.key == "" {
-		return nil, fmt.Errorf("key \"%s\" is invalid", command.key)
+	if command.Key == "" {
+		return nil, fmt.Errorf("Key \"%s\" is invalid", command.Key)
 	}
 
-	switch command.commandType {
+	switch command.CommandType {
 	case SET:
-		s.store[command.key] = command.value
-		return nil, nil
+		s.store[command.Key] = command.Value
+		return serializeCommandResult(&KeyValueDbStateMachineCommandResult{Data: s.store[command.Key]})
 	case GET:
-		return serializeCommandResult(&KeyValueDbStateMachineCommandResult{data: s.store[command.key]})
+		return serializeCommandResult(&KeyValueDbStateMachineCommandResult{Data: s.store[command.Key]})
 	case UNSET:
-		value := s.store[command.key]
-		delete(s.store, command.key)
-		return serializeCommandResult(&KeyValueDbStateMachineCommandResult{data: value})
+		value := s.store[command.Key]
+		delete(s.store, command.Key)
+		return serializeCommandResult(&KeyValueDbStateMachineCommandResult{Data: value})
 	default:
-		return nil, fmt.Errorf("command \"%s\" is not recognized.", command.commandType)
+		return nil, fmt.Errorf("command \"%s\" is not recognized.", command.CommandType)
 	}
 }
 

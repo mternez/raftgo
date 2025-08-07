@@ -7,10 +7,11 @@ import (
 )
 
 type ServerCfg struct {
-	MinHeartbeatTimeout int `yaml:"minHeartbeatTimeout"`
-	MaxHeartbeatTimeout int `yaml:"maxHeartbeatTimeout"`
-	ElectionTimeout     int `yaml:"electionTimeout"`
-	ProbePeersTimeout   int `yaml:"probePeersTimeout"`
+	MinHeartbeatTimeout int    `yaml:"minHeartbeatTimeout"`
+	MaxHeartbeatTimeout int    `yaml:"maxHeartbeatTimeout"`
+	ElectionTimeout     int    `yaml:"electionTimeout"`
+	ProbePeersTimeout   int    `yaml:"probePeersTimeout"`
+	HttpPort            string `yaml:"httpPort"`
 	Node                NodeCfg
 	Peers               []NodeCfg `yaml:"peers"`
 }
