@@ -28,8 +28,8 @@ type ServerNode struct {
 	commitIndex int // index of highest log entry known to be committed (initialized to 0, increases monotonically)
 	lastApplied int // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
 	// Only for leaders
-	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
-	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+	nextIndex  map[int]int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
+	matchIndex map[int]int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 }
 
 type ServerConfiguration struct {
@@ -241,20 +241,19 @@ func (s *Server) AppendEntries(payload AppendEntriesPayload, reply *AppendEntrie
 		s.becomeFollower(payload.LeaderTerm)
 	}
 
-	prevLogEntry := s.getLogEntryByIndex(payload.PrevLogIndex)
-
-	if prevLogEntry != nil && !(prevLogEntry.Term == payload.PrevLogTerm) {
-		reply.Success = false
-		reply.FollowerTerm = s.node.currentTerm
+	if len(payload.Entries) != 0 {
+		prevLogEntry := s.getLogEntryByIndex(payload.PrevLogIndex)
+		if prevLogEntry != nil && !(prevLogEntry.Term == payload.PrevLogTerm) {
+			reply.Success = false
+			reply.FollowerTerm = s.node.currentTerm
+			s.updateEntries(payload.Entries)
+			return nil
+		}
+		if payload.LeaderCommitIndex > s.node.commitIndex {
+			s.updateCommitIndex(payload.LeaderCommitIndex, payload.Entries)
+		}
 		s.updateEntries(payload.Entries)
-		return nil
 	}
-
-	if payload.LeaderCommitIndex > s.node.commitIndex {
-		s.updateCommitIndex(payload.LeaderCommitIndex, payload.Entries)
-	}
-
-	s.updateEntries(payload.Entries)
 
 	reply.Success = true
 	reply.FollowerTerm = s.node.currentTerm
@@ -509,16 +508,18 @@ func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32) {
 	defer s.appendEntriesWaitGroup.Done()
 	s.mutex.Lock()
 	s.logger.Debug("sending heartbeat", "node", s.node, "peer", peer.id)
-	prevLogEntryIndex := s.node.nextIndex[peer.id-1] - 1
+	prevLogEntryIndex := s.node.nextIndex[peer.id] - 1
 	prevLogEntryTerm := -1
 	prevLogEntry := s.getLogEntryByIndex(prevLogEntryIndex)
 	if prevLogEntry != nil {
 		prevLogEntryTerm = prevLogEntry.Term
 	}
 	entries := make([]LogEntry, 0)
-	peerNextLogIndex := s.node.nextIndex[peer.id-1]
-	for i := peerNextLogIndex; i < len(s.node.Entries); i++ {
-		entries = append(entries, *s.node.Entries[i])
+	peerNextLogIndex := s.node.nextIndex[peer.id]
+	if peerNextLogIndex >= 0 {
+		for i := peerNextLogIndex; i < len(s.node.Entries); i++ {
+			entries = append(entries, *s.node.Entries[i])
+		}
 	}
 	payload := AppendEntriesPayload{
 		LeaderTerm:        s.node.currentTerm,
@@ -537,11 +538,13 @@ func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32) {
 	}
 	// follower contained entry matching prevLogIndex and prevLogTerm
 	if reply.Success {
-		s.node.nextIndex[peer.id-1]++
-		s.node.matchIndex[peer.id-1]++
+		if len(entries) > 0 {
+			s.node.nextIndex[peer.id]++
+			s.node.matchIndex[peer.id]++
+		}
 		successCounter.Add(1)
 	} else {
-		s.node.nextIndex[peer.id-1]--
+		s.node.nextIndex[peer.id]--
 	}
 	s.mutex.Unlock()
 	return
@@ -567,11 +570,12 @@ func (s *Server) becomeLeader() {
 }
 
 func (s *Server) initializeLeaderIndexes() {
-	s.node.nextIndex = make([]int, len(s.cluster.peers))
-	for ind, _ := range s.node.nextIndex {
-		s.node.nextIndex[ind] = s.getLastLogIndex() + 1
+	s.node.nextIndex = make(map[int]int, len(s.cluster.peers))
+	s.node.matchIndex = make(map[int]int, len(s.cluster.peers))
+	for _, peer := range s.cluster.peers {
+		s.node.nextIndex[peer.id] = s.getLastLogIndex() + 1
+		s.node.matchIndex[peer.id] = 0
 	}
-	s.node.matchIndex = make([]int, len(s.cluster.peers))
 }
 
 func (s *Server) becomeCandidate() {
