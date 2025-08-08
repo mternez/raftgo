@@ -70,9 +70,9 @@ func handleUnset(raftServer *raft.Server) func(w http.ResponseWriter, req *http.
 }
 
 func submitCommand(raftServer *raft.Server, command *KeyValueDbStateMachineCommand, w http.ResponseWriter) {
-	submitted := raftServer.SubmitCommand(marshalCommand(command))
-	if submitted {
-		commitedCommand := <-raftServer.CommittedCommandsChannel
+	commandSubmitted, committedEntryChan := raftServer.SubmitCommand(marshalCommand(command))
+	if commandSubmitted {
+		commitedCommand := <-committedEntryChan
 		result, commandErr := unmarshalResult(&commitedCommand)
 		if commandErr != nil {
 			http.Error(w, fmt.Sprintf("commited command has an error %s", commitedCommand.Error), 500)

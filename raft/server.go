@@ -41,19 +41,18 @@ type ServerConfiguration struct {
 }
 
 type Server struct {
-	cluster                  *Cluster
-	requestVoteWaitGroup     sync.WaitGroup
-	appendEntriesWaitGroup   sync.WaitGroup
-	mutex                    sync.Mutex
-	electionTicker           *time.Ticker // Ticker for election period
-	listenHeartbeatTicker    *time.Ticker // Ticker for leader hearbeat
-	sendHeartbeatTicker      *time.Ticker
-	configuration            *ServerConfiguration
-	node                     *ServerNode
-	logger                   Logger
-	storage                  ServerNodeStorage
-	stateMachine             StateMachine
-	CommittedCommandsChannel chan CommittedEntry
+	cluster                *Cluster
+	requestVoteWaitGroup   sync.WaitGroup
+	appendEntriesWaitGroup sync.WaitGroup
+	mutex                  sync.Mutex
+	electionTicker         *time.Ticker // Ticker for election period
+	listenHeartbeatTicker  *time.Ticker // Ticker for leader hearbeat
+	sendHeartbeatTicker    *time.Ticker
+	configuration          *ServerConfiguration
+	node                   *ServerNode
+	logger                 Logger
+	storage                ServerNodeStorage
+	stateMachine           StateMachine
 }
 
 type CommittedEntry struct {
@@ -114,13 +113,12 @@ func WithDefault() ServerOption {
 
 func NewServer(nodeId int, peers []*Peer, options ...ServerOption) *Server {
 	s := &Server{
-		CommittedCommandsChannel: make(chan CommittedEntry, 1),
-		mutex:                    sync.Mutex{},
-		requestVoteWaitGroup:     sync.WaitGroup{},
-		appendEntriesWaitGroup:   sync.WaitGroup{},
-		node:                     &ServerNode{id: nodeId, votes: 0, votedFor: _nilPeerId, commitIndex: 0, lastApplied: 0},
-		cluster:                  &Cluster{peers: peers, leader: nil},
-		configuration:            &ServerConfiguration{},
+		mutex:                  sync.Mutex{},
+		requestVoteWaitGroup:   sync.WaitGroup{},
+		appendEntriesWaitGroup: sync.WaitGroup{},
+		node:                   &ServerNode{id: nodeId, votes: 0, votedFor: _nilPeerId, commitIndex: 0, lastApplied: 0},
+		cluster:                &Cluster{peers: peers, leader: nil},
+		configuration:          &ServerConfiguration{},
 	}
 	// If no options provided, apply default configuration
 	if len(options) == 0 {
@@ -288,7 +286,7 @@ func (s *Server) updateEntries(newEntries []LogEntry) {
 	for _, newEntry := range newEntries {
 		s.node.Entries = append(s.node.Entries, &newEntry)
 		s.logger.Debug("applying committed entry from leader")
-		s.applyCommittedEntry(&newEntry)
+		s.applyCommittedEntry(&newEntry, nil)
 	}
 }
 
@@ -547,26 +545,25 @@ func (s *Server) becomeCandidate() {
 	s.persistState()
 }
 
-func (s *Server) SubmitCommand(command []byte) bool {
+func (s *Server) SubmitCommand(command []byte) (bool, chan CommittedEntry) {
 	s.mutex.Lock()
 
 	s.logger.Debug("submitted command", "node", s.node, "command", command)
 
 	if s.node.state != LEADER {
 		s.mutex.Unlock()
-		return false
+		return false, nil
 	}
 
 	s.node.Entries = append(s.node.Entries, &LogEntry{Index: s.getLastLogIndex() + 1, Term: s.node.currentTerm, Command: command})
 
-	s.logger.Debug("sending entries")
-
 	s.mutex.Unlock()
-	s.sendAppendEntries()
-	return true
+	committedEntryChan := make(chan CommittedEntry, 1)
+	go s.sendAppendEntries(committedEntryChan)
+	return true, committedEntryChan
 }
 
-func (s *Server) sendAppendEntries() {
+func (s *Server) sendAppendEntries(committedEntryChan chan CommittedEntry) {
 	s.mutex.Lock()
 	if s.node.state != LEADER {
 		s.mutex.Unlock()
@@ -578,10 +575,9 @@ func (s *Server) sendAppendEntries() {
 		peer.client.Reconnect()
 		if peer.client.IsConnected() {
 			s.appendEntriesWaitGroup.Add(1)
-			go s.sendEntries(peer, &successCounter)
+			go s.sendEntries(peer, &successCounter, committedEntryChan)
 		}
 	}
-	s.logger.Debug("sent all requests, now waiting")
 	// Wait for all requests to be made
 	done := make(chan struct{})
 	go func() {
@@ -595,24 +591,19 @@ func (s *Server) sendAppendEntries() {
 		if s.node.state != LEADER {
 			return
 		}
-		s.logger.Debug("processing results")
 		if len(s.node.Entries) != 0 {
 			livePeers := s.livePeers()
 			majority := (livePeers+1)/2 + 1
-			if int(successCounter.Load()) >= majority {
-				s.logger.Debug("logs commited")
-				s.node.commitIndex = s.node.commitIndex + len(s.node.Entries)
-				return
-			} else {
-				s.logger.Debug("logs not commited")
-				return
+			nbrRequestsSuccess := int(successCounter.Load())
+			if nbrRequestsSuccess >= majority {
+				s.node.commitIndex = s.node.commitIndex + nbrRequestsSuccess
 			}
 		}
 		return
 	}
 }
 
-func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32) {
+func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32, committedEntryChan chan CommittedEntry) {
 	defer s.appendEntriesWaitGroup.Done()
 	s.mutex.Lock()
 	s.logger.Debug("sending entries to peer", "node", s.node, "peer", peer.id)
@@ -647,12 +638,10 @@ func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32) {
 	// follower contained entry matching prevLogIndex and prevLogTerm
 	if reply.Success {
 		for _, entry := range entries {
-			s.logger.Debug("entries committed")
 			s.node.nextIndex[peer.id]++
 			s.node.matchIndex[peer.id]++
 			s.node.commitIndex = entry.Index
-			s.applyCommittedEntry(&entry)
-			s.logger.Debug("after apply entry")
+			s.applyCommittedEntry(&entry, committedEntryChan)
 		}
 		successCounter.Add(1)
 	} else {
@@ -662,7 +651,7 @@ func (s *Server) sendEntries(peer *Peer, successCounter *atomic.Int32) {
 	return
 }
 
-func (s *Server) applyCommittedEntry(entry *LogEntry) {
+func (s *Server) applyCommittedEntry(entry *LogEntry, committedEntryChan chan CommittedEntry) {
 
 	s.logger.Debug("applying entry to state machine", "entry", entry)
 
@@ -672,17 +661,16 @@ func (s *Server) applyCommittedEntry(entry *LogEntry) {
 	}
 	s.node.lastApplied = entry.Index
 	s.persistState()
-	s.logger.Debug("before sending to committed entry channel")
-	go func(committedEntry *LogEntry, committedEntriesChannel chan CommittedEntry) {
-		committedEntriesChannel <- CommittedEntry{
-			Index:   committedEntry.Index,
-			Command: committedEntry.Command,
-			Result:  commandResult,
-			Error:   commitErr,
-		}
-	}(entry, s.CommittedCommandsChannel)
-
-	s.logger.Debug("after sending to committed entry channel")
+	if committedEntryChan != nil {
+		go func() {
+			committedEntryChan <- CommittedEntry{
+				Index:   entry.Index,
+				Command: entry.Command,
+				Result:  commandResult,
+				Error:   commitErr,
+			}
+		}()
+	}
 }
 
 func (s *Server) persistState() {
