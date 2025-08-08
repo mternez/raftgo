@@ -6,11 +6,12 @@ Basic Raft implementation in Golang
 
 The `raft` package contains the implementation of the Raft algorithm.
 
-The `main` package contains an example for using this implementation.
+The `example` folder contains a `main` package which is a usage example of this implementation.
 
-## Example package
+## Usage example
 
-`main` package contains an example use case of the raft algorithm. 
+`example` folder contains an example use case of the raft algorithm.
+The example in this case is an in memory key-value database (just a simple map[string]string). 
 
 ### Structure 
 
@@ -19,14 +20,15 @@ The `main` package contains an example for using this implementation.
 - kvstatemachine.go contains a simple in memory key value database serving as a statemachine.
 - rpcclient.go contains the RPC client used in the example.
 - storage.go contains a simple json file storage system
-- configuraiton.go contains utilities to read yaml node configuration from the configuration files
+- configuration.go contains utilities to read yaml node configuration from the configuration files
 
 ### How to run
 
 The following command starts the example program with the configuration for the node of id "1" :
 
 ````
-go build cfg1.yml
+cd example
+go run . cfg1.yml
 ````
 
 Upon running any node, a file ``store_[NODE_ID].json`` will be created to persist the state of the node.

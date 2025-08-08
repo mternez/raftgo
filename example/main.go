@@ -1,7 +1,6 @@
 package main
 
 import (
-	"RaftGo/raft"
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
@@ -13,6 +12,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"raftgo/raft"
 	"time"
 )
 
@@ -92,16 +92,11 @@ func handleUnset(raftServer *raft.Server) func(w http.ResponseWriter, req *http.
 
 func handleGetCurrentStateMachine(stateMachine *KeyValueDbStateMachine) func(w http.ResponseWriter, req *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
-		fmt.Fprintf(w, "%s", createKeyValuePairs(stateMachine.store))
+		var marshalledResponse bytes.Buffer
+		json.NewEncoder(&marshalledResponse)
+		value, _ := json.Marshal(stateMachine.store)
+		w.Write(value)
 	}
-}
-
-func createKeyValuePairs(m map[string]string) string {
-	b := new(bytes.Buffer)
-	for key, value := range m {
-		fmt.Fprintf(b, "%s=\"%s\"\n", key, value)
-	}
-	return b.String()
 }
 
 func unmarshalRequestBody(req *http.Request) (*RequestBody, error) {

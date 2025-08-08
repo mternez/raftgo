@@ -1,11 +1,11 @@
 package main
 
 import (
-	"RaftGo/raft"
 	"bytes"
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"raftgo/raft"
 	"sync"
 )
 

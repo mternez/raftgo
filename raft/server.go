@@ -176,8 +176,8 @@ func (s *Server) waitInitialGracePeriod() {
 	}
 }
 
+// Goroutine to regularly reconnect to the peers
 func (s *Server) probePeers() {
-	// Goroutine to regularly reconnect to the peers
 	probePeersTicker := time.NewTicker(s.configuration.probePeersTimeout * _tickerUnit)
 	go func() {
 		for {

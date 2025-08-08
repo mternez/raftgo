@@ -1,9 +1,9 @@
 package main
 
 import (
-	"RaftGo/raft"
 	"fmt"
 	"net/rpc"
+	"raftgo/raft"
 )
 
 var _ raft.PeerClient = (*RpcClient)(nil)

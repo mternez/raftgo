@@ -1,7 +1,6 @@
 package main
 
 import (
-	"RaftGo/raft"
 	"bytes"
 	"crypto/sha256"
 	"encoding/gob"
@@ -9,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"raftgo/raft"
 	"sync"
 	"time"
 )
