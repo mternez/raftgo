@@ -57,8 +57,7 @@ The following endpoint returns a string representation of the current values in 
 
 ## To Do
 
-Raft : 
-- Redirect to the leader if node is requested by client or if old leader is requested
+Raft :
 - Expose Metrics
 - Tests
 

@@ -33,14 +33,7 @@ func handleSet(raftServer *raft.Server) func(w http.ResponseWriter, req *http.Re
 			Key:         reqBody.Key,
 			Value:       reqBody.Value,
 		}
-		raftServer.SubmitCommand(marshalCommand(&command))
-		commitedCommand := <-raftServer.CommittedCommandsChannel
-		result, commandErr := unmarshalResult(&commitedCommand)
-		if commandErr != nil {
-			http.Error(w, fmt.Sprintf("commited command has an error %s", commitedCommand.Error), 500)
-		} else {
-			fmt.Fprintf(w, "Result: %s", result)
-		}
+		submitCommand(raftServer, &command, w)
 	}
 }
 
@@ -56,14 +49,7 @@ func handleGet(raftServer *raft.Server) func(w http.ResponseWriter, req *http.Re
 			Key:         reqBody.Key,
 			Value:       reqBody.Value,
 		}
-		raftServer.SubmitCommand(marshalCommand(&command))
-		commitedCommand := <-raftServer.CommittedCommandsChannel
-		result, commandErr := unmarshalResult(&commitedCommand)
-		if commandErr != nil {
-			http.Error(w, fmt.Sprintf("commited command has an error %s", commitedCommand.Error), 500)
-		} else {
-			fmt.Fprintf(w, "Result: %s", result)
-		}
+		submitCommand(raftServer, &command, w)
 	}
 }
 
@@ -79,7 +65,13 @@ func handleUnset(raftServer *raft.Server) func(w http.ResponseWriter, req *http.
 			Key:         reqBody.Key,
 			Value:       reqBody.Value,
 		}
-		raftServer.SubmitCommand(marshalCommand(&command))
+		submitCommand(raftServer, &command, w)
+	}
+}
+
+func submitCommand(raftServer *raft.Server, command *KeyValueDbStateMachineCommand, w http.ResponseWriter) {
+	submitted := raftServer.SubmitCommand(marshalCommand(command))
+	if submitted {
 		commitedCommand := <-raftServer.CommittedCommandsChannel
 		result, commandErr := unmarshalResult(&commitedCommand)
 		if commandErr != nil {
@@ -87,6 +79,9 @@ func handleUnset(raftServer *raft.Server) func(w http.ResponseWriter, req *http.
 		} else {
 			fmt.Fprintf(w, "Result: %s", result)
 		}
+	} else {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte("This node is not the Leader"))
 	}
 }
 
